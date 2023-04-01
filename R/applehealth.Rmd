@@ -1,0 +1,388 @@
+---
+title: "Apple Health data"
+output: 
+  flexdashboard::flex_dashboard:
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(ggplot2)
+library(here)
+library(tsibble)
+library(lubridate)
+library(scales)
+
+records <- readRDS(here("data/tidy/records.rds"))
+
+data <- records %>% 
+  mutate(datetime = make_datetime(year, month, day, hour, minute, second)) %>% 
+  select(datetime, type, unit, value) %>% 
+  as_tsibble(key = type,index = datetime,  regular = FALSE)
+
+datemin <- min(data$datetime)
+datemax <- max(data$datetime)
+
+
+# Palettes
+
+valueboxes <- c("mediumpurple")
+chartpalette <- c("mediumpurple")
+
+# Chart themes
+
+hourtheme <- theme_minimal() +
+    theme(legend.position = "none") +
+    theme(panel.grid.minor.x = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          panel.grid.major.x = element_blank(),
+          axis.text = element_text(face = "bold", size = 12),
+          axis.title = element_text(face = "bold", size = 15),
+          plot.title = element_text(face = "bold", size = 20, hjust = 0.5))
+
+
+```
+
+Day by day {data-orientation=rows data-navmenu="Menu" data-icon="fa-calendar-alt"}
+=======================================================================
+
+Input {.sidebar}
+-----------------------------------------------------------------------
+
+### **Day by day**
+
+``` {r dateinput}
+
+dateInput("date",
+          label = "Choose a date:",
+          value = datemax,
+          min = datemin,
+          max = datemax,
+          startview = "year",
+          format = "dd MM yyyy",
+          autoclose = FALSE)
+
+
+renderText(paste("Latest date:", format(datemax, "%Y-%m-%d")))
+
+radioButtons("units", "Units:",
+             c("Imperial" = "imperial",
+               "Metric" = "metric"),
+             selected = "metric"
+             )
+
+datesteps <- reactive({
+  stepsval <- data %>% 
+                filter_index(format(input$date, "%Y-%m-%d")) %>% 
+                filter(type == "StepCount") %>%
+                group_by_key() %>% 
+                index_by(date = ~ as_date(.)) %>% 
+                summarise(count = sum(value)) 
+
+  returnval <- format(stepsval$count[1], big.mark = ",")
+  
+  returnval
+})
+
+datedistance <- reactive({
+  distval <- data %>% 
+                filter_index(format(input$date, "%Y-%m-%d")) %>% 
+                filter(type == "DistanceWalkingRunning") %>% 
+                group_by_key() %>% 
+                index_by(date = ~ as_date(.)) %>% 
+                summarise(count = sum(value))  
+
+    unitval <- ifelse(input$units == "metric",
+              distval$count[1] * 1.609,
+              distval$count[1]
+              )
+
+    unittext <- ifelse(input$units == "metric",
+                       "km",
+                       "miles")
+    
+    returnval <- paste(format(unitval, nsmall = 1, digits = 2), unittext)
+    
+    returnval
+})
+
+datewalkspeed <- reactive({
+    speedval <- data %>% 
+                filter_index(format(input$date, "%Y-%m-%d")) %>% 
+                filter(type == "WalkingSpeed") %>% 
+                group_by_key() %>% 
+                index_by(date = ~ as_date(.)) %>% 
+                summarise(count = mean(value)) 
+   
+    unitval <- ifelse(input$units == "metric",
+              speedval$count[1],
+              speedval$count[1] * 0.621371
+              )
+
+    unittext <- ifelse(input$units == "metric",
+                       "km/h",
+                       "mph")
+                 
+  returndata <- paste(format(unitval, nsmall = 1, digits = 2), unittext)
+  
+  returndata
+})
+
+datesteplength <- reactive({
+    returndata <- data %>% 
+                filter_index(format(input$date, "%Y-%m-%d")) %>% 
+                filter(type == "WalkingStepLength") %>% 
+                group_by_key() %>% 
+                index_by(date = ~ as_date(.)) %>% 
+                summarise(count = mean(value)) 
+
+  returndata
+})
+
+dateflights <- reactive({
+    returndata <- data %>% 
+                filter_index(format(input$date, "%Y-%m-%d")) %>% 
+                filter(type == "FlightsClimbed") %>% 
+                group_by_key() %>% 
+                index_by(date = ~ as_date(.)) %>% 
+                summarise(count = sum(value)) 
+                
+  returndata
+})
+
+```
+
+
+Row
+-----------------------------------------------------------------------
+### Steps
+
+```{r}
+  renderValueBox({
+    valueBox(value = datesteps(),
+             caption = "Steps on this day",
+             icon = "fa-shoe-prints",
+             color = valueboxes[1])
+
+  })
+```
+
+### Distance
+
+```{r}
+  renderValueBox({
+    valueBox(value = datedistance(),
+             caption = "Distance walked",
+             icon = "fa-road",
+             color = valueboxes[1])
+  })
+```
+
+### Speed
+
+```{r}
+  renderValueBox({
+    valueBox(value = datewalkspeed(),
+             caption = "Average walking speed",
+             icon = "fa-tachometer-alt",
+             color = valueboxes[1])
+  })
+```
+
+### Flights
+
+```{r}
+  renderValueBox({
+    valueBox(value = dateflights()$count[1],
+             caption = "Flights climbed",
+             icon = "fa-arrow-up",
+             color = valueboxes[1])
+  })
+```
+
+Row
+------------------------------------------------------------------------
+### Steps per hour
+
+```{r}
+datehours <- reactive({
+    steps <- data %>% 
+                filter_index(format(input$date, "%Y-%m-%d")) %>% 
+                filter(type == "StepCount") %>% 
+                group_by_key() %>% 
+                index_by(hour = ~ hour(.)) %>% 
+                summarise(count = sum(value)) %>% 
+                fill_gaps(.full = TRUE, count = 0)
+    
+    template <- tibble(type = "StepCount", hour = 0:23)
+    
+    # coalesce fills in NAs with 0
+    returndata <- template %>% 
+                  left_join(steps) %>% 
+                  mutate(count = coalesce(count, 0))
+    
+  returndata
+})
+
+renderPlot({
+  datehours() %>% ggplot(aes(x = hour, y  = count, fill = type)) +
+      geom_bar(stat = "identity", position = "dodge") +
+    scale_fill_manual(values = chartpalette) +
+    scale_x_continuous(breaks = 0:23) +
+    labs(title = format(input$date, "%d %B %Y"),
+         x = "Hour",
+         y = "Step count") +
+    hourtheme
+
+})
+
+```
+
+Heatmap {data-orientation=rows data-navmenu="Menu" data-icon="fa-thermometer-half"}
+=======================================================================
+
+Input {.sidebar}
+-----------------------------------------------------------------------
+### **Heatmap**
+
+```{r}
+
+sliderInput("daterange",
+            label = "Choose range:",
+            min = date(datemin),
+            max = date(datemax),
+            value = c(date(datemin), date(datemax))
+  )
+
+renderText(format(input$daterange[1], "%Y-%m-%d"))
+renderText(format(input$daterange[2], "%Y-%m-%d"))
+
+```
+
+Row
+------------------------------------------------------------------------
+
+### Heat map
+
+```{r}
+dayshours <- reactive({
+
+hours <- data %>% 
+      filter_index(format(input$daterange[1], "%Y-%m-%d") ~ format(input$daterange[2], "%Y-%m-%d")) %>%
+      mutate(day = wday(datetime,label = TRUE)) %>% 
+      filter(type == "StepCount") %>% 
+      group_by_key() %>% 
+      index_by(hour = ~ hour(.)) %>%
+      group_by(day) %>% 
+      summarise(average = mean(value)) %>% 
+      fill_gaps(.full = TRUE, average = 0)
+
+# Horrible kludge
+x <- tibble(day = c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"))
+y <- tibble(hour = 0:23)
+template <- x %>% 
+     full_join(y, by = character())
+template$day <- ordered(template$day, levels = c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")) 
+
+returndata <- template %>% 
+            left_join(hours) %>% 
+            mutate(average = coalesce(average, 0))
+returndata
+
+})
+
+renderPlot({ 
+dayshours() %>% ggplot(aes(x = hour, y = day, fill = average)) +
+      geom_tile() +
+      scale_fill_gradient(low="white", high="mediumpurple") +
+      scale_x_continuous(breaks = 0:23) +
+      hourtheme
+  
+})
+```
+
+Row
+--------------------------------------------------------------------------
+
+### Timeseries
+
+
+```{r}
+
+days <- reactive({
+
+returndata <- data %>% 
+      filter_index(format(input$daterange[1], "%Y-%m-%d") ~ format(input$daterange[2], "%Y-%m-%d")) %>%
+      filter(type == "StepCount") %>% 
+      group_by_key() %>% 
+      index_by(day = ~ as_date(.)) %>%
+      summarise(count = sum(value)) %>% 
+      fill_gaps(.full = TRUE, count = 0)
+
+})
+
+renderPlot({ 
+
+  days() %>% 
+    ggplot(aes(x = day, y = count, fill = type)) +
+    geom_bar(stat = "identity") 
+
+})
+
+
+```
+
+Year {data-orientation=rows data-navmenu="Menu" data-icon="fa-calendar"}
+=======================================================================
+
+Input {.sidebar}
+-----------------------------------------------------------------------
+
+### **Years**
+
+``` {r}
+
+selectInput("year",
+            label = "Choose year:",
+            choices = year(datemin):year(datemax))
+
+
+```
+
+
+Row
+------------------------------------------------------------------------
+
+### Year
+
+``` {r}
+
+year <- reactive({
+  
+  returndata <- data %>% 
+    filter(type == "StepCount") %>% 
+    filter_index(input$year) %>% 
+    mutate(month = month(datetime)) %>% 
+    mutate(day = mday(datetime)) %>% 
+    group_by_key() %>% 
+    index_by(day = ~ day(.)) %>% 
+    group_by(month, day) %>% 
+    summarise(total = sum(value))
+  
+  
+})
+
+renderPlot({
+  
+  year() %>% 
+    ggplot(aes(x = day, y = month)) +
+      geom_tile(aes(fill = total)) +
+  scale_fill_gradient(low="white", high="mediumpurple") +
+    hourtheme
+  
+})
+
+
+```
